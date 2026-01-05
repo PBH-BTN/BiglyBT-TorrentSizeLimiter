@@ -1,6 +1,8 @@
 # BiglyBT-TorrentSizeLimiter
 
-为做种机设计：限制 BiglyBT 任务列表中的任务总大小。
+为做种机设计：限制 BiglyBT 任务列表中的任务总大小。  
+
+本插件需要 BiglyBT 4.0.0.0 或者更高版本。
 
 ## 概述
 
