@@ -6,8 +6,10 @@ import com.biglybt.pif.PluginConfig;
 import com.biglybt.pif.PluginInterface;
 import com.biglybt.pif.UnloadablePlugin;
 import com.biglybt.pif.download.*;
+import com.biglybt.pif.tag.Tag;
 import com.biglybt.pif.ui.config.FloatParameter;
 import com.biglybt.pif.ui.config.LongParameter;
+import com.biglybt.pif.ui.config.StringParameter;
 import com.biglybt.pif.ui.model.BasicPluginConfigModel;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
@@ -28,6 +30,8 @@ public class Plugin implements UnloadablePlugin, DownloadManagerListener, Downlo
     private long protectTimeHours;
     private FloatParameter shareRatioThresholdParam;
     private float shareRatioThreshold = 1.5f;
+    private StringParameter includeTagParam;
+    private String includeTags;
 
     @Override
     public void unload() {
@@ -42,6 +46,7 @@ public class Plugin implements UnloadablePlugin, DownloadManagerListener, Downlo
         this.totalSizeLimit = cfg.getPluginLongParameter("total-size-limit-mb", 0) * 1024 * 1024;
         this.shareRatioThreshold = cfg.getPluginFloatParameter("share-ratio-threshold", 1.5f);
         this.protectTimeHours = cfg.getPluginLongParameter("protect-time-hours", 0);
+        this.includeTags = cfg.getPluginStringParameter("include-tags");
         configModel = pluginInterface.getUIManager().createBasicPluginConfigModel("torrentsizelimiter.configui");
         totalSizeLimitParam = configModel.addLongParameter2("total-size-limit-mb", "torrentsizelimiter.total-size-limit", totalSizeLimit);
         totalSizeLimitParam.addListener(lis -> {
@@ -58,7 +63,11 @@ public class Plugin implements UnloadablePlugin, DownloadManagerListener, Downlo
             this.shareRatioThreshold = shareRatioThresholdParam.getValue();
             saveAndReload();
         });
-
+        includeTagParam = configModel.addStringParameter2("include-tags", "torrentsizelimiter.include-tags", includeTags);
+        includeTagParam.addListener(lis -> {
+            this.includeTags = includeTagParam.getValue();
+            saveAndReload();
+        });
         saveAndReload();
         pluginInterface.getDownloadManager().addListener(this);
     }
@@ -84,8 +93,23 @@ public class Plugin implements UnloadablePlugin, DownloadManagerListener, Downlo
 
     }
 
+    private boolean isTagged(Download download) {
+        String[] tags = this.includeTags.split(",");
+        for (Tag tag : download.getTags()) {
+            for (String s : tags) {
+                if (tag.getTagName().equalsIgnoreCase(s)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     @Override
     public void downloadAdded(Download download) {
+        if (isTagged(download)) {
+            return;
+        }
         long existsTaskSize = 0;
         Download[] existsDownloads = pluginInterface.getDownloadManager().getDownloads();
         for (Download task : existsDownloads) {
@@ -115,13 +139,14 @@ public class Plugin implements UnloadablePlugin, DownloadManagerListener, Downlo
         long currentTime = System.currentTimeMillis();
         long protectTime = currentTime - (protectTimeHours * 60 * 60 * 1000);
 
-
         // 将候选任务分组：分享率超过1.0的和不超过1.0的
         List<Download> highRatioTasks = new ArrayList<>();
         List<Download> lowRatioTasks = new ArrayList<>();
-
         for (Download d : existsDownloads) {
             if (d == download) continue;
+            if (!isTagged(d)) {
+                continue;
+            }
             if (d.getStats().getShareRatio() >= shareRatioThreshold * 1000) {
                 highRatioTasks.add(d);
             } else {
