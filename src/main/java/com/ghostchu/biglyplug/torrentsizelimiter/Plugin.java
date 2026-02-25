@@ -107,7 +107,7 @@ public class Plugin implements UnloadablePlugin, DownloadManagerListener, Downlo
 
     @Override
     public void downloadAdded(Download download) {
-        if (isTagged(download)) {
+        if (!isTagged(download)) {
             return;
         }
         long existsTaskSize = 0;
