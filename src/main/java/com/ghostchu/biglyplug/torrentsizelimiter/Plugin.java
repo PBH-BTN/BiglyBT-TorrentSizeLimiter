@@ -1,11 +1,14 @@
 package com.ghostchu.biglyplug.torrentsizelimiter;
 
+import com.biglybt.core.config.COConfigurationManager;
 import com.biglybt.core.logging.LogAlert;
 import com.biglybt.core.logging.Logger;
 import com.biglybt.pif.PluginConfig;
 import com.biglybt.pif.PluginInterface;
 import com.biglybt.pif.UnloadablePlugin;
-import com.biglybt.pif.download.*;
+import com.biglybt.pif.download.Download;
+import com.biglybt.pif.download.DownloadListener;
+import com.biglybt.pif.download.DownloadManagerListener;
 import com.biglybt.pif.tag.Tag;
 import com.biglybt.pif.ui.config.FloatParameter;
 import com.biglybt.pif.ui.config.LongParameter;
@@ -17,6 +20,7 @@ import lombok.extern.slf4j.Slf4j;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Getter
@@ -24,202 +28,218 @@ public class Plugin implements UnloadablePlugin, DownloadManagerListener, Downlo
     private PluginInterface pluginInterface;
     private BasicPluginConfigModel configModel;
     private PluginConfig cfg;
+
     private LongParameter totalSizeLimitParam;
     private long totalSizeLimit;
+
     private LongParameter protectTimeHoursParam;
     private long protectTimeHours;
-    private FloatParameter shareRatioThresholdParam;
-    private float shareRatioThreshold = 1.5f;
+
+    private LongParameter assessmentStartHoursParam;
+    private long assessmentStartHours;
+
+    private FloatParameter targetShareRatioParam;
+    private float targetShareRatio = 1.0f;
+
     private StringParameter includeTagParam;
     private String includeTags;
 
-    @Override
-    public void unload() {
+    // 权重常量
+    private static final double TIME_WEIGHT = 2.5;
+    private static final double RATIO_WEIGHT = 1.2;
 
-    }
+    @Override
+    public void unload() {}
 
     @Override
     public void initialize(PluginInterface pluginInterface) {
         this.pluginInterface = pluginInterface;
         this.cfg = pluginInterface.getPluginconfig();
-        // convert from MB to Bytes
+
+        // 加载配置
         this.totalSizeLimit = cfg.getPluginLongParameter("total-size-limit-mb", 0) * 1024 * 1024;
-        this.shareRatioThreshold = cfg.getPluginFloatParameter("share-ratio-threshold", 1.5f);
-        this.protectTimeHours = cfg.getPluginLongParameter("protect-time-hours", 0);
-        this.includeTags = cfg.getPluginStringParameter("include-tags");
+        this.protectTimeHours = cfg.getPluginLongParameter("protect-time-hours", 8);
+        this.assessmentStartHours = cfg.getPluginLongParameter("assessment-start-hours", 12);
+        this.targetShareRatio = cfg.getPluginFloatParameter("target-share-ratio", 1.0f);
+        this.includeTags = cfg.getPluginStringParameter("include-tags", "");
+
         configModel = pluginInterface.getUIManager().createBasicPluginConfigModel("torrentsizelimiter.configui");
-        totalSizeLimitParam = configModel.addLongParameter2("total-size-limit-mb", "torrentsizelimiter.total-size-limit", totalSizeLimit);
+
+        totalSizeLimitParam = configModel.addLongParameter2("total-size-limit-mb", "torrentsizelimiter.total-size-limit", totalSizeLimit / (1024 * 1024));
         totalSizeLimitParam.addListener(lis -> {
             this.totalSizeLimit = totalSizeLimitParam.getValue() * 1024 * 1024;
             saveAndReload();
         });
+
         protectTimeHoursParam = configModel.addLongParameter2("protect-time-hours", "torrentsizelimiter.protect-time-hours", protectTimeHours);
         protectTimeHoursParam.addListener(lis -> {
             this.protectTimeHours = protectTimeHoursParam.getValue();
             saveAndReload();
         });
-        shareRatioThresholdParam = configModel.addFloatParameter2("share-ratio-threshold", "torrentsizelimiter.share-ratio-threshold", shareRatioThreshold, 0.0f, Float.MAX_VALUE, true, 4);
-        shareRatioThresholdParam.addListener(lis -> {
-            this.shareRatioThreshold = shareRatioThresholdParam.getValue();
+
+        assessmentStartHoursParam = configModel.addLongParameter2("assessment-start-hours", "torrentsizelimiter.assessment-start-hours", assessmentStartHours);
+        assessmentStartHoursParam.addListener(lis -> {
+            this.assessmentStartHours = assessmentStartHoursParam.getValue();
             saveAndReload();
         });
+
+        targetShareRatioParam = configModel.addFloatParameter2("target-share-ratio", "torrentsizelimiter.target-share-ratio", targetShareRatio, 0.0f, Float.MAX_VALUE, true, 4);
+        targetShareRatioParam.addListener(lis -> {
+            this.targetShareRatio = targetShareRatioParam.getValue();
+            saveAndReload();
+        });
+
         includeTagParam = configModel.addStringParameter2("include-tags", "torrentsizelimiter.include-tags", includeTags);
         includeTagParam.addListener(lis -> {
             this.includeTags = includeTagParam.getValue();
             saveAndReload();
         });
+
         saveAndReload();
         pluginInterface.getDownloadManager().addListener(this);
-    }
 
+        COConfigurationManager.setBooleanDefault("donations.donated", true);
+        COConfigurationManager.save();
+    }
 
     private void saveAndReload() {
         cfg.setPluginParameter("total-size-limit-mb", this.totalSizeLimit / (1024 * 1024));
+        cfg.setPluginParameter("protect-time-hours", this.protectTimeHours);
+        cfg.setPluginParameter("assessment-start-hours", this.assessmentStartHours);
+        cfg.setPluginParameter("target-share-ratio", this.targetShareRatio);
+        cfg.setPluginParameter("include-tags", this.includeTags);
         try {
             this.cfg.save();
         } catch (Exception e) {
-            throw new RuntimeException(e);
+            log.error("Failed to save config", e);
         }
     }
 
-
     @Override
-    public void stateChanged(Download download, int i, int i1) {
+    public void downloadAdded(Download download) {
+        if (!isTagged(download)) return;
 
+        Download[] allDownloads = pluginInterface.getDownloadManager().getDownloads();
+
+        long managedTotalSize = 0;
+        List<Download> managedList = new ArrayList<>();
+
+        for (Download task : allDownloads) {
+            if (isTagged(task) && task != download) {
+                managedList.add(task);
+                managedTotalSize += task.getTorrentSize();
+            }
+        }
+
+        // 如果现有受管任务 + 新任务 还没到上限，直接跑路
+        if (managedTotalSize + download.getTorrentSize() <= totalSizeLimit) return;
+
+        // 计算差额：我们需要腾出多少字节？
+        long needToClearSize = (managedTotalSize + download.getTorrentSize()) - totalSizeLimit;
+        long now = System.currentTimeMillis();
+        long protectTimeMs = protectTimeHours * 3600000L;
+
+        // 筛选出可以杀掉的种子（过保护期）
+        List<Download> candidates = managedList.stream()
+                // 排序逻辑：
+                // 1. 优先按照计算出的 DeleteScore 降序（分数越高越该删）
+                // 2. 如果分数极其接近，则对比分享率（分享率越低越该删）
+
+                .filter(d -> (now - d.getCreationTime()) > protectTimeMs).sorted((d1, d2) -> {
+                    double s1 = calculateDeleteScore(d1, now);
+                    double s2 = calculateDeleteScore(d2, now);
+                    if (Math.abs(s1 - s2) < 0.001) {
+                        return Double.compare(d1.getStats().getShareRatio(), d2.getStats().getShareRatio());
+                    }
+                    return Double.compare(s2, s1);
+                }).collect(Collectors.toList());
+
+        long deletedSizeSoFar = 0;
+        List<Download> toRemove = new ArrayList<>();
+
+        // 【核心点】精准剔除：只拿走刚好能填补差额的任务量
+        for (Download d : candidates) {
+            toRemove.add(d);
+            deletedSizeSoFar += d.getTorrentSize();
+            if (deletedSizeSoFar >= needToClearSize) {
+                break; // 够了，停手！不再继续勾选下一个任务
+            }
+        }
+
+        if (deletedSizeSoFar >= needToClearSize) {
+            for (Download d : toRemove) {
+                try {
+                    String logMsg = String.format("[Limiter] Ejected: '%s' to free %dMB space", d.getName(), d.getTorrentSize()/(1024*1024));
+                    Logger.log(new LogAlert(true, LogAlert.AT_INFORMATION, logMsg));
+                    d.stopAndRemove(true, true);
+                } catch (Exception e) {
+                    log.error("Delete failed: " + d.getName(), e);
+                }
+            }
+        } else {
+            // 空间实在挤不出来了（比如新任务比你所有可删任务加起来还大）
+            rejectDownload(download, "Required " + (needToClearSize/1024/1024) + "MB but only " + (deletedSizeSoFar/1024/1024) + "MB available from old torrents.");
+        }
     }
 
-    @Override
-    public void positionChanged(Download download, int i, int i1) {
+    private double calculateDeleteScore(Download task, long now) {
+        long ageMs = now - task.getCreationTime();
+        double ageHours = ageMs / 3600000.0;
 
+        long totalUploaded = task.getStats().getUploaded();
+        long totalSize = task.getTorrentSize(); // 字节
+
+        // 1. 基础相对分享率 (Uploaded / Size)
+        double relativeRatio = (totalSize > 0) ? (double) totalUploaded / totalSize : 0;
+
+        // 2. 引入体积补偿因子 (Size Bonus)
+        // 使用以 GB 为基准的对数补偿：让大文件在计算贡献时更有优势
+        // 逻辑：每增加一个数量级的大小，其分享率在评分时的权重就会提升
+        double sizeInGB = totalSize / (1024.0 * 1024.0 * 1024.0);
+        // 使用 Math.log10(sizeInGB + 1) 或者 Math.pow(sizeInGB, 0.2)
+        // 这里推荐使用开方或低幂次方，既能照顾大文件，又不会让超级大文件永远不被删
+        double sizeWeight = Math.pow(Math.max(sizeInGB, 0.1), 0.3); // 0.3次方是一个温和的补偿
+
+        // 3. 计算“加权分享贡献”
+        // 一个 100GB 分享率为 0.5 的种子，其加权贡献可能等同于一个 1GB 分享率为 2.0 的种子
+        double weightedContribution = relativeRatio * sizeWeight;
+
+        double assessmentStartMs = assessmentStartHours * 3600000.0;
+        double score = ageHours * TIME_WEIGHT;
+
+        if (ageMs < assessmentStartMs) {
+            // 评估期内：加权贡献越高，减分越多（越安全）
+            score -= (weightedContribution * RATIO_WEIGHT);
+        } else {
+            // 评估期后：如果加权贡献还没达到目标，则增加删除权重
+            // 注意：这里的 targetShareRatio 也要配合 sizeWeight 的逻辑
+            score += (this.targetShareRatio - weightedContribution) * RATIO_WEIGHT;
+        }
+
+        return score;
+    }
+
+    private void rejectDownload(Download d, String reason) {
+        Logger.log(new LogAlert(true, LogAlert.AT_WARNING, "Rejected: " + reason + " [" + d.getName() + "]"));
+        try {
+            d.stopAndRemove(true, true);
+        } catch (Exception e) {
+            log.error("Reject failed", e);
+        }
     }
 
     private boolean isTagged(Download download) {
-        String[] tags = this.includeTags.split(",");
+        if (includeTags == null || includeTags.trim().isEmpty()) return true;
+        String[] tags = includeTags.split(",");
         for (Tag tag : download.getTags()) {
             for (String s : tags) {
-                if (tag.getTagName().equalsIgnoreCase(s)) {
-                    return true;
-                }
+                if (tag.getTagName().equalsIgnoreCase(s.trim())) return true;
             }
         }
         return false;
     }
 
-    @Override
-    public void downloadAdded(Download download) {
-        if (!isTagged(download)) {
-            return;
-        }
-        long existsTaskSize = 0;
-        Download[] existsDownloads = pluginInterface.getDownloadManager().getDownloads();
-        for (Download task : existsDownloads) {
-            if (task != download) {
-                existsTaskSize += task.getTorrentSize();
-            }
-        }
-        if (existsTaskSize + download.getTorrentSize() <= totalSizeLimit) {
-            // do nothing
-            return;
-        }
-        if (download.getTorrentSize() >= totalSizeLimit) {
-            // 如果大于总限制，则直接拒绝
-            Logger.log(new LogAlert(true, LogAlert.AT_INFORMATION, "Rejected: Size exceeds total size limit: " + download.getName() + "'."));
-            try {
-                download.stopAndRemove(true, true);
-            } catch (DownloadException | DownloadRemovalVetoException e) {
-                Logger.log(new LogAlert(true, LogAlert.AT_ERROR, "Failed to remove oversized torrent '" + download.getName() + "': " + e.getMessage(), e));
-            }
-            return;
-        }
-
-        long needToDeleteSize = existsTaskSize + download.getTorrentSize() - totalSizeLimit;
-        List<Download> toRemove = new ArrayList<>();
-
-        // 获取所有符合条件的候选任务
-        long currentTime = System.currentTimeMillis();
-        long protectTime = currentTime - (protectTimeHours * 60 * 60 * 1000);
-
-        // 将候选任务分组：分享率超过1.0的和不超过1.0的
-        List<Download> highRatioTasks = new ArrayList<>();
-        List<Download> lowRatioTasks = new ArrayList<>();
-        for (Download d : existsDownloads) {
-            if (d == download) continue;
-            if (!isTagged(d)) {
-                continue;
-            }
-            if (d.getStats().getShareRatio() >= shareRatioThreshold * 1000) {
-                highRatioTasks.add(d);
-            } else {
-                lowRatioTasks.add(d);
-            }
-        }
-
-        lowRatioTasks.removeIf(d -> (currentTime - d.getCreationTime()) <= protectTime);
-
-        // 排序规则：
-        // 1. 优先删除分享率超过1.0的任务，按分享率降序排列（越大越优先）
-        // 2. 其次删除分享率不足1.0的任务，按创建时间升序排列（越旧越优先）
-        highRatioTasks.sort((d1, d2) -> {
-            // 分享率高的优先
-            int ratioCompare = Double.compare(d2.getStats().getShareRatio(), d1.getStats().getShareRatio());
-            if (ratioCompare != 0) {
-                return ratioCompare;
-            }
-            // 分享率相同时，旧的优先
-            return Long.compare(d1.getCreationTime(), d2.getCreationTime());
-        });
-        // 旧的优先
-        lowRatioTasks.sort(Comparator.comparingLong(Download::getCreationTime));
-
-        // 先尝试从分享率高的任务中删除
-        long deletedSize = 0;
-        for (Download d : highRatioTasks) {
-            toRemove.add(d);
-            deletedSize += d.getTorrentSize();
-            if (deletedSize >= needToDeleteSize) {
-                break;
-            }
-        }
-
-        // 如果还不够，从分享率低的任务中继续删除
-        if (deletedSize < needToDeleteSize) {
-            for (Download d : lowRatioTasks) {
-                // 避免重复删除
-                if (!toRemove.contains(d)) {
-                    toRemove.add(d);
-                    deletedSize += d.getTorrentSize();
-                    if (deletedSize >= needToDeleteSize) {
-                        break;
-                    }
-                }
-            }
-        }
-
-        // 检查是否能够容纳新任务
-        if (deletedSize >= needToDeleteSize) {
-            // 删除选中的任务
-            for (Download d : toRemove) {
-                try {
-                    Logger.log(new LogAlert(true, LogAlert.AT_INFORMATION,
-                            "Ejected: '" + d.getName() + "' Share Ratio: " + d.getStats().getShareRatio() + ", Uploaded: " + d.getStats().getUploaded() + ", TTL: " + ((currentTime - d.getCreationTime()) / (60 * 60 * 1000)) + " hours."));
-                    d.stopAndRemove(true, true);
-                } catch (DownloadException | DownloadRemovalVetoException e) {
-                    Logger.log(new LogAlert(true, LogAlert.AT_ERROR, "Failed to remove old torrent '" + d.getName() + "': " + e.getMessage(), e));
-                }
-            }
-        } else {
-            // 即使删除所有符合条件的任务也不够容纳新任务，拒绝新任务
-            Logger.log(new LogAlert(true, LogAlert.AT_INFORMATION, "Rejected: Not enough space even after removing eligible old torrents '" + download.getName() + "'."));
-            try {
-                download.stopAndRemove(true, true);
-            } catch (DownloadException | DownloadRemovalVetoException e) {
-                Logger.log(new LogAlert(true, LogAlert.AT_ERROR, "Failed to remove new torrent '" + download.getName() + "': " + e.getMessage(), e));
-            }
-        }
-    }
-
-    @Override
-    public void downloadRemoved(Download download) {
-
-    }
+    @Override public void stateChanged(Download download, int i, int i1) {}
+    @Override public void positionChanged(Download download, int i, int i1) {}
+    @Override public void downloadRemoved(Download download) {}
 }
