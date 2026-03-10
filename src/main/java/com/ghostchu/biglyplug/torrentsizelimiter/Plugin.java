@@ -1,9 +1,6 @@
 package com.ghostchu.biglyplug.torrentsizelimiter;
 
-import com.biglybt.core.CoreFactory;
 import com.biglybt.core.config.COConfigurationManager;
-import com.biglybt.core.history.DownloadHistory;
-import com.biglybt.core.history.impl.DownloadHistoryManagerImpl;
 import com.biglybt.core.logging.LogAlert;
 import com.biglybt.core.logging.Logger;
 import com.biglybt.pif.PluginConfig;
@@ -52,13 +49,16 @@ public class Plugin implements UnloadablePlugin, DownloadManagerListener, Downlo
     private String telegramChatId;
     private StringParameter telegramBotTokenParam;
     private StringParameter telegramChatIdParam;
+    private long startTime;
 
     @Override
     public void unload() {
+
     }
 
     @Override
     public void initialize(PluginInterface pluginInterface) {
+        this.startTime = System.currentTimeMillis();
         this.pluginInterface = pluginInterface;
         this.cfg = pluginInterface.getPluginconfig();
 
@@ -117,9 +117,12 @@ public class Plugin implements UnloadablePlugin, DownloadManagerListener, Downlo
 
         saveAndReload();
         pluginInterface.getDownloadManager().addListener(this);
-
         COConfigurationManager.setBooleanDefault("donations.donated", true);
         COConfigurationManager.save();
+    }
+
+    private boolean isNewDownload(Download download) {
+        return System.currentTimeMillis() - startTime > 30 * 1000L; // 30秒内的下载都算旧任务，避免插件重启时把现有任务当成新任务处理
     }
 
     private void saveAndReload() {
@@ -140,65 +143,71 @@ public class Plugin implements UnloadablePlugin, DownloadManagerListener, Downlo
     @Override
     public void downloadAdded(Download download) {
         StringJoiner poster = new StringJoiner("\n\n");
-        if (!isTagged(download)) return;
-        if (download.getName().contains("Dynamis One")) { // Dynamis One 轰炸 RSS 还天天换前缀
-            try {
-                download.stopAndRemove(true, true);
-                return;
-            } catch (Exception e) {
-                log.error("Failed to remove Dynamis One", e);
-            }
-        }
-
-        Download[] allDownloads = pluginInterface.getDownloadManager().getDownloads();
-
-        long managedTotalSize = 0;
-        List<Download> managedList = new ArrayList<>();
-
-        for (Download task : allDownloads) {
-            if (isTagged(task) && task != download) {
-                managedList.add(task);
-                managedTotalSize += task.getTorrentSize();
-            }
-        }
-
-        // 如果现有受管任务 + 新任务 还没到上限，直接跑路
-        if (managedTotalSize + download.getTorrentSize() <= totalSizeLimit) return;
-
-        // 计算差额：我们需要腾出多少字节？
-        long needToClearSize = (managedTotalSize + download.getTorrentSize()) - totalSizeLimit;
-        long now = System.currentTimeMillis();
-        long protectTimeMs = protectTimeHours * 3600000L;
-
-        // 筛选出可以杀掉的种子（过保护期）
-        Map<Download, DeleteScore> candidates = managedList.stream()
-                // 排序逻辑：
-                // 1. 优先按照计算出的 DeleteScore 降序（分数越高越该删）
-                // 2. 如果分数极其接近，则对比分享率（分享率越低越该删）
-
-                .filter(d -> (now - d.getCreationTime()) > protectTimeMs)
-                .map(d -> new AbstractMap.SimpleEntry<>(d, calculateDeleteScore(d, now)))
-                .sorted((d1, d2) -> {
-                    double s1 = d1.getValue().getScore();
-                    double s2 = d2.getValue().getScore();
-                    if (Math.abs(s1 - s2) < 0.001) {
-                        return Double.compare(d1.getKey().getStats().getShareRatio(), d2.getKey().getStats().getShareRatio());
-                    }
-                    return Double.compare(s2, s1);
-                }).collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, (e1, e2) -> e1, LinkedHashMap::new));
-
-        long deletedSizeSoFar = 0;
-        Map<Download, DeleteScore> toRemove = new LinkedHashMap<>();
-
-        // 【核心点】精准剔除：只拿走刚好能填补差额的任务量
-        for (Map.Entry<Download, DeleteScore> d : candidates.entrySet()) {
-            toRemove.put(d.getKey(), d.getValue());
-            deletedSizeSoFar += d.getKey().getTorrentSize();
-            if (deletedSizeSoFar >= needToClearSize) {
-                break; // 够了，停手！不再继续勾选下一个任务
-            }
-        }
         try {
+            if (!isTagged(download)) return;
+            if (download.getName().contains("Dynamis One")) { // Dynamis One 轰炸 RSS 还天天换前缀
+                try {
+                    download.stopAndRemove(true, true);
+                    return;
+                } catch (Exception e) {
+                    log.error("Failed to remove Dynamis One", e);
+                }
+            }
+
+            Download[] allDownloads = pluginInterface.getDownloadManager().getDownloads();
+
+            long managedTotalSize = 0;
+            List<Download> managedList = new ArrayList<>();
+
+            for (Download task : allDownloads) {
+                if (isTagged(task) && task != download) {
+                    managedList.add(task);
+                    managedTotalSize += task.getTorrentSize();
+                }
+            }
+
+            // 如果现有受管任务 + 新任务 还没到上限，直接跑路
+            if (managedTotalSize + download.getTorrentSize() <= totalSizeLimit) {
+                if (isNewDownload(download)) {
+                    poster.add(String.format("[任务控制] 下载任务 `%s` (%s) 已接受并开始下载", download.getName(), MsgUtil.humanReadableByteCountBin(download.getTorrentSize())));
+                }
+                return;
+            }
+
+            // 计算差额：我们需要腾出多少字节？
+            long needToClearSize = (managedTotalSize + download.getTorrentSize()) - totalSizeLimit;
+            long now = System.currentTimeMillis();
+            long protectTimeMs = protectTimeHours * 3600000L;
+
+            // 筛选出可以杀掉的种子（过保护期）
+            Map<Download, DeleteScore> candidates = managedList.stream()
+                    // 排序逻辑：
+                    // 1. 优先按照计算出的 DeleteScore 降序（分数越高越该删）
+                    // 2. 如果分数极其接近，则对比分享率（分享率越低越该删）
+
+                    .filter(d -> (now - d.getCreationTime()) > protectTimeMs)
+                    .map(d -> new AbstractMap.SimpleEntry<>(d, calculateDeleteScore(d, now)))
+                    .sorted((d1, d2) -> {
+                        double s1 = d1.getValue().getScore();
+                        double s2 = d2.getValue().getScore();
+                        if (Math.abs(s1 - s2) < 0.001) {
+                            return Double.compare(d1.getKey().getStats().getShareRatio(), d2.getKey().getStats().getShareRatio());
+                        }
+                        return Double.compare(s2, s1);
+                    }).collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, (e1, e2) -> e1, LinkedHashMap::new));
+
+            long deletedSizeSoFar = 0;
+            Map<Download, DeleteScore> toRemove = new LinkedHashMap<>();
+
+            // 【核心点】精准剔除：只拿走刚好能填补差额的任务量
+            for (Map.Entry<Download, DeleteScore> d : candidates.entrySet()) {
+                toRemove.put(d.getKey(), d.getValue());
+                deletedSizeSoFar += d.getKey().getTorrentSize();
+                if (deletedSizeSoFar >= needToClearSize) {
+                    break; // 够了，停手！不再继续勾选下一个任务
+                }
+            }
+
             if (deletedSizeSoFar >= needToClearSize) {
                 for (Map.Entry<Download, DeleteScore> set : toRemove.entrySet()) {
                     Download d = set.getKey();
@@ -207,10 +216,10 @@ public class Plugin implements UnloadablePlugin, DownloadManagerListener, Downlo
                         Logger.log(new LogAlert(true, LogAlert.AT_INFORMATION, logMsg));
                         d.stopAndRemove(true, true);
                         poster.add(String.format("""
-                                [文件大小限制] 弹出任务 `%s` 以释放 %s 空间，用于容纳新的任务。
-                                任务删除权重分：%s 以下是删除时此任务的数据快照：
-                                任务分享率：%.2f 总上传量：%s 做种时间：%s。
-                                """, d.getName(), MsgUtil.humanReadableByteCountBin(d.getTorrentSize()), set.getValue().toString(),
+                                        [文件大小限制] 弹出任务 `%s` 以释放 %s 空间，用于容纳新的任务。
+                                        任务删除权重分：%s 以下是删除时此任务的数据快照：
+                                        任务分享率：%.2f 总上传量：%s 做种时间：%s。
+                                        """, d.getName(), MsgUtil.humanReadableByteCountBin(d.getTorrentSize()), set.getValue().toString(),
                                 d.getStats().getShareRatio() / 1000f, MsgUtil.humanReadableByteCountBin(d.getStats().getUploaded()),
                                 TimeConverter.INSTANCE.formatDuration(d.getStats().getSecondsOnlySeeding())
                         ));
@@ -218,19 +227,9 @@ public class Plugin implements UnloadablePlugin, DownloadManagerListener, Downlo
                         log.error("Delete failed: {}", d.getName(), e);
                     }
                 }
-
-                getDownloadHistoryManager().ifPresent(dhm -> {
-                    byte[] dHash = download.getTorrentHash();
-                    List<DownloadHistory> find = dhm.getHistory().stream().filter(downloadHistory -> Arrays.equals(dHash, downloadHistory.getTorrentHash()) || Arrays.equals(dHash, downloadHistory.getTorrentV2Hash()))
-                            .limit(1).toList();
-                    if (!find.isEmpty()) {
-                        DownloadHistory history = find.getFirst();
-                        // 检查添加时间是否是最近 10 分钟
-                        if (history.getAddTime() > (System.currentTimeMillis() - 10 * 60 * 1000)) {
-                            poster.add(String.format("[任务控制] 下载任务 `%s` (%s) 已接受并开始下载", download.getName(), MsgUtil.humanReadableByteCountBin(download.getTorrentSize())));
-                        }
-                    }
-                });
+                if (isNewDownload(download)) {
+                    poster.add(String.format("[任务控制] 下载任务 `%s` (%s) 已接受并开始下载", download.getName(), MsgUtil.humanReadableByteCountBin(download.getTorrentSize())));
+                }
             } else {
                 // 空间实在挤不出来了（比如新任务比你所有可删任务加起来还大）
                 rejectDownload(download, String.format("Required %s but only %s available from old torrents.", MsgUtil.humanReadableByteCountBin(needToClearSize), MsgUtil.humanReadableByteCountBin(deletedSizeSoFar)));
@@ -239,17 +238,10 @@ public class Plugin implements UnloadablePlugin, DownloadManagerListener, Downlo
         } finally {
             if (poster.length() != 0 && telegramChatId != null && !telegramBotToken.trim().isEmpty()) {
                 TelegramHook.send(telegramBotToken, telegramChatId, poster.toString());
+            } else {
+                System.out.println("Unable to post to Telegram: Bot token or chat ID not configured or poster.length is zero.");
             }
         }
-    }
-
-    private Optional<DownloadHistoryManagerImpl> getDownloadHistoryManager() {
-        Object downloadHistoryManager = CoreFactory.getSingleton().getGlobalManager().getDownloadHistoryManager();
-        if (downloadHistoryManager != null) {
-            DownloadHistoryManagerImpl dhm = (DownloadHistoryManagerImpl) downloadHistoryManager;
-            return Optional.of(dhm);
-        }
-        return Optional.empty();
     }
 
     private DeleteScore calculateDeleteScore(Download task, long now) {
@@ -324,5 +316,11 @@ public class Plugin implements UnloadablePlugin, DownloadManagerListener, Downlo
 
     @Override
     public void downloadRemoved(Download download) {
+    }
+
+    public interface NewDownloadResultCallback {
+        Download getDownload();
+
+        void onResult(boolean isNew);
     }
 }

@@ -3,6 +3,7 @@ package com.ghostchu.biglyplug.torrentsizelimiter;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.io.File;
 import java.lang.management.LockInfo;
 import java.lang.management.MonitorInfo;
 import java.lang.management.ThreadInfo;
@@ -15,11 +16,6 @@ public final class MsgUtil {
     private static final DecimalFormat df = new DecimalFormat("0.00%");
     private static final SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
     private static final SimpleDateFormat stf = new SimpleDateFormat("HH:mm:ss");
-
-    public static String escapeSql(String sql){
-        if(sql == null) return null;
-        return sql.replace("'", "''");
-    }
 
     public static String humanReadableByteCountBin(long bytes) {
         long absB = bytes == Long.MIN_VALUE ? Long.MAX_VALUE : Math.abs(bytes);

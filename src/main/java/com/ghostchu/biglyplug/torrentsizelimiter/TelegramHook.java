@@ -1,23 +1,29 @@
 package com.ghostchu.biglyplug.torrentsizelimiter;
 
-import java.io.OutputStreamWriter;
-import java.net.HttpURLConnection;
+import com.google.gson.Gson;
+
 import java.net.URL;
-import java.nio.charset.StandardCharsets;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 public class TelegramHook {
+    private static final Gson GSON = new Gson();
+
     public static void send(String apiKey, String chatId, String message) {
-        CompletableFuture.runAsync(()->{
-            try {
-                URL url = new java.net.URL("https://api.telegram.org/bot" + apiKey + "/sendMessage");
-                HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("POST");
-                conn.setDoOutput(true);
-                OutputStreamWriter out = new java.io.OutputStreamWriter(conn.getOutputStream());
-                out.write("chat_id=" + chatId + "&text=" + java.net.URLEncoder.encode(message, StandardCharsets.UTF_8));
-                out.flush();
-                out.close();
+        CompletableFuture.runAsync(() -> {
+            try (HttpClient client = HttpClient.newHttpClient()) {
+                Map<String, Object> jsonBody = Map.of(
+                        "chat_id", chatId,
+                        "text", message
+                );
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(new URL("https://api.telegram.org/bot" + apiKey + "/sendMessage").toURI())
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(jsonBody)))
+                        .build();
+                var resp = client.send(request, java.net.http.HttpResponse.BodyHandlers.ofString());
             } catch (Exception e) {
                 e.printStackTrace();
             }
