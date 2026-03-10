@@ -118,6 +118,13 @@ public class Plugin implements UnloadablePlugin, DownloadManagerListener, Downlo
     @Override
     public void downloadAdded(Download download) {
         if (!isTagged(download)) return;
+        if(download.getName().contains("Dynamis One")){ // Dynamis One 轰炸 RSS 还天天换前缀
+            try {
+                download.stopAndRemove(true, true);
+            }catch (Exception e){
+                log.error("Failed to remove Dynamis One", e);
+            }
+        }
 
         Download[] allDownloads = pluginInterface.getDownloadManager().getDownloads();
 

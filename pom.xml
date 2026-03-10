@@ -6,7 +6,7 @@
 
     <groupId>com.ghostchu.peerbanhelper</groupId>
     <artifactId>BiglyBT-TorrentSizeLimiter</artifactId>
-    <version>1.1.4</version>
+    <version>1.1.5</version>
     <!--    <packaging>takari-jar</packaging>-->
     <packaging>jar</packaging>
 
