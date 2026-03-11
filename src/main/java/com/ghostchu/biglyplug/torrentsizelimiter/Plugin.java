@@ -222,7 +222,7 @@ public class Plugin implements UnloadablePlugin, DownloadManagerListener, Downlo
                                         任务分享率：%.2f 总上传量：%s 做种时间：%s。
                                         """, d.getName(), MsgUtil.humanReadableByteCountBin(d.getTorrentSize()), set.getValue().toString(),
                                 d.getStats().getShareRatio() / 1000f, MsgUtil.humanReadableByteCountBin(d.getStats().getUploaded()),
-                                TimeConverter.INSTANCE.formatDuration(d.getStats().getSecondsOnlySeeding())
+                                TimeConverter.INSTANCE.formatDuration(d.getStats().getSecondsOnlySeeding()*1000)
                         ));
                     } catch (Exception e) {
                         log.error("Delete failed: {}", d.getName(), e);
