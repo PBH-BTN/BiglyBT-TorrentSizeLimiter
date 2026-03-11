@@ -122,7 +122,9 @@ public class Plugin implements UnloadablePlugin, DownloadManagerListener, Downlo
     }
 
     private boolean isNewDownload(Download download) {
-        return System.currentTimeMillis() - startTime > 30 * 1000L; // 30秒内的下载都算旧任务，避免插件重启时把现有任务当成新任务处理
+        long sinceBoot = System.currentTimeMillis() - startTime;
+        // 启动后10分钟内加入的任务不算新任务，避免重启时误杀
+        return sinceBoot >= 10 * 1000;
     }
 
     private void saveAndReload() {
@@ -240,6 +242,9 @@ public class Plugin implements UnloadablePlugin, DownloadManagerListener, Downlo
                 TelegramHook.send(telegramBotToken, telegramChatId, poster.toString());
             } else {
                 System.out.println("Unable to post to Telegram: Bot token or chat ID not configured or poster.length is zero.");
+                System.out.println("Poster length: " + poster.length());
+                System.out.println("TelegramChatId: " + telegramChatId);
+                System.out.println("TelegramBotToken: " + (telegramBotToken == null ? "null" : telegramBotToken.trim().isEmpty() ? "empty" : "configured"));
             }
         }
     }
@@ -279,6 +284,7 @@ public class Plugin implements UnloadablePlugin, DownloadManagerListener, Downlo
         }
 
         return DeleteScore.builder()
+                .relativeRatio(relativeRatio)
                 .assessmentStarted(assessmentStarted)
                 .sizeWeight(sizeWeight)
                 .weightedContribution(weightedContribution)
@@ -316,11 +322,5 @@ public class Plugin implements UnloadablePlugin, DownloadManagerListener, Downlo
 
     @Override
     public void downloadRemoved(Download download) {
-    }
-
-    public interface NewDownloadResultCallback {
-        Download getDownload();
-
-        void onResult(boolean isNew);
     }
 }

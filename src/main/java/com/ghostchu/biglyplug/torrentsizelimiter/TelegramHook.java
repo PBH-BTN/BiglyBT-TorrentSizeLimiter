@@ -7,6 +7,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executors;
 
 public class TelegramHook {
     private static final Gson GSON = new Gson();
@@ -24,9 +25,10 @@ public class TelegramHook {
                         .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(jsonBody)))
                         .build();
                 var resp = client.send(request, java.net.http.HttpResponse.BodyHandlers.ofString());
+                System.out.println(resp.body());
             } catch (Exception e) {
                 e.printStackTrace();
             }
-        });
+        }, Executors.newVirtualThreadPerTaskExecutor());
     }
 }
