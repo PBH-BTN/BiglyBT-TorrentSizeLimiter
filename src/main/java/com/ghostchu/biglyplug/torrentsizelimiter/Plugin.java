@@ -123,8 +123,7 @@ public class Plugin implements UnloadablePlugin, DownloadManagerListener, Downlo
 
     private boolean isNewDownload(Download download) {
         long sinceBoot = System.currentTimeMillis() - startTime;
-        // 启动后10分钟内加入的任务不算新任务，避免重启时误杀
-        return sinceBoot >= 10 * 1000;
+        return sinceBoot >= 15 * 1000;
     }
 
     private void saveAndReload() {
@@ -240,11 +239,6 @@ public class Plugin implements UnloadablePlugin, DownloadManagerListener, Downlo
         } finally {
             if (poster.length() != 0 && telegramChatId != null && !telegramBotToken.trim().isEmpty()) {
                 TelegramHook.send(telegramBotToken, telegramChatId, poster.toString());
-            } else {
-                System.out.println("Unable to post to Telegram: Bot token or chat ID not configured or poster.length is zero.");
-                System.out.println("Poster length: " + poster.length());
-                System.out.println("TelegramChatId: " + telegramChatId);
-                System.out.println("TelegramBotToken: " + (telegramBotToken == null ? "null" : telegramBotToken.trim().isEmpty() ? "empty" : "configured"));
             }
         }
     }
