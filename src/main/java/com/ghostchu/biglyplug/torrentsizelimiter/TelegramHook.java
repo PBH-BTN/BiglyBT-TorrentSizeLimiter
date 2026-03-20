@@ -29,6 +29,6 @@ public class TelegramHook {
             } catch (Exception e) {
                 e.printStackTrace();
             }
-        }, Executors.newVirtualThreadPerTaskExecutor());
+        });
     }
 }
